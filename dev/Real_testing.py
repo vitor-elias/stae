@@ -126,15 +126,11 @@ def main(args):
     # Print the current date and time
     print(f"Start: {datetime.now()}\n", flush=True)
 
-    if 'Geological_anomaly' in args.datafile:
-        dataset_name = 'Geological_anomaly'
-    elif 'EGMS_anomaly' in args.datafile:
-        dataset_name = 'EGMS_anomaly'
+    dataset_name = 'Real_data'
 
     # OBTAINING DATA
-    datafile = args.datafile
-    datasets = torch.load(dataset_path + datafile)
-    model_dict = torch.load(root_dir + f'/outputs/Optuna_analysis/model_dict_{dataset_name}.pkl')
+    datasets = torch.load('/home/vitorro/Repositories/stae/data/datasets/Real_data/dataset.pt')
+    model_dict = torch.load(root_dir + f'/outputs/Optuna_analysis/model_dict_EGMS_anomaly.pkl')
     
     if args.device=='auto':
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -148,20 +144,25 @@ def main(args):
 
     gc.collect()
 
-
-    model_names = ['AE', 'GCN2MLP', 'GCNAE', 'GConv2MLP', 'GConvAE', 'GUNet', 'RAE_GRU', 'RAE_LSTM']
+    results = {}
+    # 
+    model_names = ['GCN2MLP', 'GUNet']
     for model_name in model_names:
         print(f'model: {model_name}', flush=True)
 
+        if model_name == 'GCN2MLP':
+            model_dict = torch.load(root_dir + f'/outputs/Optuna_analysis/model_dict_Geological_anomaly.pkl')
+        elif model_name == 'GUNet':
+            model_dict = torch.load(root_dir + f'/outputs/Optuna_analysis/model_dict_EGMS_anomaly.pkl')
+
         params = model_dict[model_name]['trial_params']
-        score_list = []
+        result_datasets = []
 
         for iteration, dataset in enumerate(datasets):
 
             print(f'dataset: {iteration}/{len(datasets)}', flush=True) 
 
             data = dataset['data']
-            label = dataset['label'].any(axis=1)
             X = torch.tensor(data).float().to(device)
 
             n_nodes = X.shape[0]
@@ -172,30 +173,30 @@ def main(args):
 
             edge_index, edge_weight = (None, None)
 
-            scores_seed = []
-            for seed in range(25):
+            seed = 0
+           
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed(seed)
+            np.random.seed(seed)
 
-                torch.manual_seed(seed)
-                torch.cuda.manual_seed(seed)
-                np.random.seed(seed)
+            model = get_model_from_name(model_name, n_nodes, input_dim, params, device=device)
+            model = model.to(device)
 
-                model = get_model_from_name(model_name, n_nodes, input_dim, params, device=device)
-                model = model.to(device)
+            if isinstance(model, graph_models):
+                edge_index = dataset['edge_index'].to( device )
+                edge_weight = dataset['edge_weight'].to( device )
 
-                if isinstance(model, graph_models):
-                    edge_index = dataset['edge_index'].to( device )
-                    edge_weight = dataset['edge_weight'].to( device )
+            output = train_model(model, X, lr, n_epochs, edge_index, edge_weight, seed)
 
-                output = train_model(model, X, lr, n_epochs, edge_index, edge_weight, seed)
+            scores = pixel_mse(output, X).detach().cpu().numpy()
 
-                scores= pixel_mse(output, X).detach().cpu().numpy()
-                scores_seed.append(scores)
-            
-            score_list.append(scores_seed)
+            new_dataset = copy.deepcopy(dataset)
+            new_dataset['scores'] = scores
+            result_datasets.append(new_dataset)
 
-        model_dict[model_name]['scores'] = score_list
+        results[model_name] = result_datasets
 
-    torch.save(model_dict, root_dir + f'/outputs/Testing/model_dict_testing_{dataset_name}.pkl')
+    torch.save(results, root_dir + f'/outputs/Testing/Scores_real_data.pkl')
 
     print(f"End: {datetime.now()}\n\n", flush=True)
 
@@ -204,8 +205,6 @@ if __name__ == "__main__":
 
 
     parser = argparse.ArgumentParser()
-
-    parser.add_argument('--datafile', type=str, default='EGMS_anomaly/Test/dataset.pt')
 
     parser.add_argument('--device', type=str, default='cuda')
 
